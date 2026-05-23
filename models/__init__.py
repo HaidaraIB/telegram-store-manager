@@ -8,6 +8,7 @@ from models.PurchaseOrder import PurchaseOrder, PurchaseOrderStatus
 from models.PaymentMethod import PaymentMethod, PaymentMethodAddress, PaymentMethodType
 from models.Game import Game
 from models.Item import Item, ItemType
+from models.ApiProvider import ApiProvider  # noqa: F401
 from models.GeneralSettings import GeneralSettings
 from models.ApiGame import ApiGame
 from models.ApiPurchaseOrder import ApiPurchaseOrder, ApiPurchaseOrderStatus

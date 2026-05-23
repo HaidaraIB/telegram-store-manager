@@ -28,8 +28,13 @@ def init_db():
         conn.execute(text("PRAGMA synchronous=NORMAL"))
         conn.execute(text("PRAGMA foreign_keys=ON"))
         conn.execute(text("PRAGMA busy_timeout=5000"))
+        conn.commit()
 
     Base.metadata.create_all(engine)
+
+    from models.alembic_runner import run_alembic_upgrade
+
+    run_alembic_upgrade()
 
 
 Session = scoped_session(

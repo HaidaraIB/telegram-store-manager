@@ -18,6 +18,10 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+# httpx/httpcore log every request at INFO — too noisy for normal operation
+for _noisy_logger in ("httpx", "httpcore"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
 from handlers import setup_and_run
 
 if __name__ == "__main__":

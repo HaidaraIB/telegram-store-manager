@@ -13,14 +13,22 @@ DENOMINATIONS_PER_PAGE = 6  # Number of denominations per page
 SEARCH_RESULTS_PER_PAGE = 6  # Number of search results per page
 
 
-def get_game_display_name(game_code: str, default_name: str, lang: models.Language) -> str:
+def get_game_display_name(
+    game_code: str, default_name: str, lang: models.Language, provider=None
+) -> str:
     """Get the display name for a game, using ApiGame if available"""
+    from services.provider_factory import get_active_provider_enum
+
+    if provider is None:
+        provider = get_active_provider_enum()
+
     with models.session_scope() as s:
         api_game = (
             s.query(models.ApiGame)
             .filter(
                 models.ApiGame.api_game_code == game_code,
-                models.ApiGame.is_active == True
+                models.ApiGame.is_active == True,
+                models.ApiGame.provider == provider,
             )
             .first()
         )
@@ -29,24 +37,25 @@ def get_game_display_name(game_code: str, default_name: str, lang: models.Langua
     return default_name
 
 
-def filter_active_games(api_games: list) -> list:
-    """Filter API games to only include those that are active in ApiGame table"""
+def filter_active_games(api_games: list, provider: models.ApiProvider = None) -> list:
+    """Filter API games to only include those active in ApiGame for the given provider."""
+    from services.provider_factory import get_active_provider_enum
+
+    if provider is None:
+        provider = get_active_provider_enum()
+
     with models.session_scope() as s:
-        # Get all active filtered games
         active_filtered_games = {
             game.api_game_code: game
             for game in s.query(models.ApiGame)
-            .filter(models.ApiGame.is_active == True)
+            .filter(
+                models.ApiGame.is_active == True,
+                models.ApiGame.provider == provider,
+            )
             .all()
         }
-    
-    # Filter API games to only include active filtered ones
-    filtered_games = [
-        game for game in api_games
-        if game.get("code") in active_filtered_games
-    ]
-    
-    return filtered_games
+
+    return [game for game in api_games if game.get("code") in active_filtered_games]
 
 
 def build_game_keyboard(
@@ -55,27 +64,26 @@ def build_game_keyboard(
     """Build keyboard for game selection with pagination"""
     total_games = len(games)
     total_pages = (total_games + GAMES_PER_PAGE - 1) // GAMES_PER_PAGE
-    
+
     # Calculate start and end indices
     start_idx = page * GAMES_PER_PAGE
     end_idx = min(start_idx + GAMES_PER_PAGE, total_games)
-    
+
     # Get games for current page
     page_games = games[start_idx:end_idx]
-    
+
     # Get display names using ApiGame if available
     game_texts = [
-        get_game_display_name(game["code"], game["name"], lang)
-        for game in page_games
+        get_game_display_name(game["code"], game["name"], lang) for game in page_games
     ]
-    
+
     # Build keyboard with games
     game_keyboard = build_keyboard(
         columns=1,
         texts=game_texts,
         buttons_data=[f"api_game_{game['code']}" for game in page_games],
     )
-    
+
     # Add pagination buttons if needed
     pagination_row = []
     if total_pages > 1:
@@ -86,7 +94,7 @@ def build_game_keyboard(
                     callback_data=f"api_games_page_{page - 1}",
                 )
             )
-        
+
         # Page indicator
         pagination_row.append(
             InlineKeyboardButton(
@@ -94,7 +102,7 @@ def build_game_keyboard(
                 callback_data="api_games_page_info",
             )
         )
-        
+
         if page < total_pages - 1:
             pagination_row.append(
                 InlineKeyboardButton(
@@ -102,15 +110,13 @@ def build_game_keyboard(
                     callback_data=f"api_games_page_{page + 1}",
                 )
             )
-        
+
         if pagination_row:
             game_keyboard.append(pagination_row)
-    
+
     # Add back button
-    game_keyboard.append(
-        build_back_to_home_page_button(lang=lang, is_admin=False)[0]
-    )
-    
+    game_keyboard.append(build_back_to_home_page_button(lang=lang, is_admin=False)[0])
+
     return InlineKeyboardMarkup(game_keyboard)
 
 
@@ -120,27 +126,29 @@ def build_denomination_keyboard(
     """Build keyboard for denomination selection with pagination"""
     total_denoms = len(catalogues)
     total_pages = (total_denoms + DENOMINATIONS_PER_PAGE - 1) // DENOMINATIONS_PER_PAGE
-    
+
     # Calculate start and end indices
     start_idx = page * DENOMINATIONS_PER_PAGE
     end_idx = min(start_idx + DENOMINATIONS_PER_PAGE, total_denoms)
-    
+
     # Get denominations for current page
     page_catalogues = catalogues[start_idx:end_idx]
-    
+
     # Get exchange rate
     exchange_rate = get_exchange_rate()
-    
+
     # Build keyboard with denominations (convert USD to Sudan currency for display)
     denomination_keyboard = build_keyboard(
         columns=1,
         texts=[
-            f"{cat['name']} - {format_float(float(cat['amount']) * exchange_rate)} SDG" 
+            f"{cat['name']} - {format_float(float(cat['amount']) * exchange_rate)} SDG"
             for cat in page_catalogues
         ],
-        buttons_data=[f"api_denom_{start_idx + i}" for i in range(len(page_catalogues))],
+        buttons_data=[
+            f"api_denom_{start_idx + i}" for i in range(len(page_catalogues))
+        ],
     )
-    
+
     # Add pagination buttons if needed
     pagination_row = []
     if total_pages > 1:
@@ -151,7 +159,7 @@ def build_denomination_keyboard(
                     callback_data=f"api_denoms_page_{page - 1}",
                 )
             )
-        
+
         # Page indicator
         pagination_row.append(
             InlineKeyboardButton(
@@ -159,7 +167,7 @@ def build_denomination_keyboard(
                 callback_data="api_denoms_page_info",
             )
         )
-        
+
         if page < total_pages - 1:
             pagination_row.append(
                 InlineKeyboardButton(
@@ -167,13 +175,11 @@ def build_denomination_keyboard(
                     callback_data=f"api_denoms_page_{page + 1}",
                 )
             )
-        
+
         if pagination_row:
             denomination_keyboard.append(pagination_row)
-    
-    denomination_keyboard.append(
-        build_back_button("back_to_api_game", lang=lang)
-    )
+
+    denomination_keyboard.append(build_back_button("back_to_api_game", lang=lang))
     denomination_keyboard.append(
         build_back_to_home_page_button(lang=lang, is_admin=False)[0]
     )
@@ -187,25 +193,27 @@ def build_server_keyboard(servers: dict, lang: models.Language) -> InlineKeyboar
         texts=list(servers.keys()),
         buttons_data=[f"api_server_{k}" for k in servers.keys()],
     )
-    server_keyboard.append(
-        build_back_button("back_to_api_player_id", lang=lang)
-    )
-    server_keyboard.append(
-        build_back_to_home_page_button(lang=lang, is_admin=False)[0]
-    )
+    server_keyboard.append(build_back_button("back_to_api_player_id", lang=lang))
+    server_keyboard.append(build_back_to_home_page_button(lang=lang, is_admin=False)[0])
     return InlineKeyboardMarkup(server_keyboard)
 
 
-def build_product_details_keyboard(lang: models.Language) -> InlineKeyboardMarkup:
-    """Build keyboard for product details confirmation"""
+def build_order_confirm_keyboard(
+    lang: models.Language, *, back_callback: str = "back_to_api_denom"
+) -> InlineKeyboardMarkup:
+    """Confirm or cancel before placing order (no balance deducted until confirm)."""
     keyboard = [
         [
             InlineKeyboardButton(
                 text=BUTTONS[lang].get("confirm_button", "Confirm ✅"),
-                callback_data="api_confirm_product",
-            )
+                callback_data="api_confirm_order",
+            ),
+            InlineKeyboardButton(
+                text=BUTTONS[lang].get("cancel_order_button", "Cancel ❌"),
+                callback_data="api_cancel_order",
+            ),
         ],
-        build_back_button("back_to_api_denom", lang=lang),
+        build_back_button(back_callback, lang=lang),
         build_back_to_home_page_button(lang=lang, is_admin=False)[0],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -226,27 +234,26 @@ def build_search_results_keyboard(
     """Build keyboard for search results with pagination"""
     total_games = len(games)
     total_pages = (total_games + SEARCH_RESULTS_PER_PAGE - 1) // SEARCH_RESULTS_PER_PAGE
-    
+
     # Calculate start and end indices
     start_idx = page * SEARCH_RESULTS_PER_PAGE
     end_idx = min(start_idx + SEARCH_RESULTS_PER_PAGE, total_games)
-    
+
     # Get games for current page
     page_games = games[start_idx:end_idx]
-    
+
     # Get display names using ApiGame if available
     game_texts = [
-        get_game_display_name(game["code"], game["name"], lang)
-        for game in page_games
+        get_game_display_name(game["code"], game["name"], lang) for game in page_games
     ]
-    
+
     # Build keyboard with games
     search_keyboard = build_keyboard(
         columns=1,
         texts=game_texts,
         buttons_data=[f"api_game_{game['code']}" for game in page_games],
     )
-    
+
     # Add pagination buttons if needed
     pagination_row = []
     if total_pages > 1:
@@ -257,7 +264,7 @@ def build_search_results_keyboard(
                     callback_data=f"api_search_page_{page - 1}",
                 )
             )
-        
+
         # Page indicator
         pagination_row.append(
             InlineKeyboardButton(
@@ -265,7 +272,7 @@ def build_search_results_keyboard(
                 callback_data="api_search_page_info",
             )
         )
-        
+
         if page < total_pages - 1:
             pagination_row.append(
                 InlineKeyboardButton(
@@ -273,15 +280,10 @@ def build_search_results_keyboard(
                     callback_data=f"api_search_page_{page + 1}",
                 )
             )
-        
+
         if pagination_row:
             search_keyboard.append(pagination_row)
-    
-    search_keyboard.append(
-        build_back_button("back_to_api_game", lang=lang)
-    )
-    search_keyboard.append(
-        build_back_to_home_page_button(lang=lang, is_admin=False)[0]
-    )
-    return InlineKeyboardMarkup(search_keyboard)
 
+    search_keyboard.append(build_back_button("back_to_api_game", lang=lang))
+    search_keyboard.append(build_back_to_home_page_button(lang=lang, is_admin=False)[0])
+    return InlineKeyboardMarkup(search_keyboard)

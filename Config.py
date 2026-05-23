@@ -15,6 +15,10 @@ class Config:
     MANUAL_PURCHASES_ARCHIVE_CHANNEL = int(os.getenv("MANUAL_PURCHASES_ARCHIVE_CHANNEL"))
 
     G2BULK_API_KEY = os.getenv("G2BULK_API_KEY")
+    GAMEVOUCHERS_API_KEY = os.getenv("GAMEVOUCHERS_API_KEY")
+    GAMEVOUCHERS_BASE_URL = os.getenv(
+        "GAMEVOUCHERS_BASE_URL", "https://gamevouchers.online"
+    )
 
     DB_PATH = os.getenv("DB_PATH")
     DB_POOL_SIZE = 20

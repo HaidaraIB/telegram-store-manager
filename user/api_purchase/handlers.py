@@ -13,7 +13,20 @@ from common.common import escape_html, format_float, get_exchange_rate
 from common.decorators import is_user_banned
 from custom_filters import PrivateChat
 from start import start_command, admin_command
-from services.g2bulk_api import G2BulkAPI
+import uuid
+from services.provider_factory import get_active_provider, get_active_provider_enum
+from services import provider_logging
+from services.api_purchase_helpers import catalogue_to_denomination
+from user.api_purchase.api_helpers import (
+    fetch_filtered_games,
+    load_denominations,
+    get_api_game_display_name,
+    check_api_game_active,
+    proceed_after_denomination,
+    show_order_confirmation,
+    clear_instant_purchase_context,
+    INSTANT_PURCHASE_CONFIRM,
+)
 from user.api_purchase.keyboards import (
     build_game_keyboard,
     build_denomination_keyboard,
@@ -31,6 +44,7 @@ import models
     INSTANT_PURCHASE_PLAYER_ID,
     INSTANT_PURCHASE_SERVER_ID,
 ) = range(4)
+# INSTANT_PURCHASE_CONFIRM is defined in api_helpers (value 4)
 
 
 @is_user_banned
@@ -39,24 +53,11 @@ async def instant_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if PrivateChat().filter(update):
         lang = get_lang(update.effective_user.id)
         try:
-            api = G2BulkAPI()
-            api_games = await api.get_games()
-
-            if not api_games:
-                await update.callback_query.answer(
-                    text=TEXTS[lang].get("no_games_available", "No games available"),
-                    show_alert=True,
-                )
-                return ConversationHandler.END
-
-            # Filter to only show active filtered games
-            games = filter_active_games(api_games)
+            games = await fetch_filtered_games()
 
             if not games:
                 await update.callback_query.answer(
-                    text=TEXTS[lang].get(
-                        "no_games_available", "No games available at the moment ❗️"
-                    ),
+                    text=TEXTS[lang].get("no_games_available", "No games available"),
                     show_alert=True,
                 )
                 return ConversationHandler.END
@@ -153,11 +154,7 @@ async def get_instant_purchase_game(update: Update, context: ContextTypes.DEFAUL
                 games = context.user_data.get("api_all_games", [])
 
                 if not games:
-                    # Reload games if not in context
-                    api = G2BulkAPI()
-                    api_games = await api.get_games()
-                    # Filter to only show active filtered games
-                    games = filter_active_games(api_games)
+                    games = await fetch_filtered_games()
                     context.user_data["api_all_games"] = games
 
                 total_pages = (len(games) + 6 - 1) // 6  # GAMES_PER_PAGE = 6
@@ -188,23 +185,14 @@ async def get_instant_purchase_game(update: Update, context: ContextTypes.DEFAUL
         if not update.callback_query.data.startswith("back"):
             game_code = update.callback_query.data.replace("api_game_", "")
             # Validate that the game is an active filtered game
-            with models.session_scope() as s:
-                api_game = (
-                    s.query(models.ApiGame)
-                    .filter(
-                        models.ApiGame.api_game_code == game_code,
-                        models.ApiGame.is_active == True,
-                    )
-                    .first()
+            if not await check_api_game_active(game_code):
+                await update.callback_query.answer(
+                    text=TEXTS[lang].get(
+                        "game_not_available", "This game is not available"
+                    ),
+                    show_alert=True,
                 )
-                if not api_game:
-                    await update.callback_query.answer(
-                        text=TEXTS[lang].get(
-                            "game_not_available", "This game is not available"
-                        ),
-                        show_alert=True,
-                    )
-                    return INSTANT_PURCHASE_GAME
+                return INSTANT_PURCHASE_GAME
             context.user_data["api_game_code"] = game_code
         else:
             game_code = context.user_data.get("api_game_code")
@@ -213,12 +201,7 @@ async def get_instant_purchase_game(update: Update, context: ContextTypes.DEFAUL
             return INSTANT_PURCHASE_GAME
 
         try:
-            api = G2BulkAPI()
-
-            # Get game info and catalogue
-            catalogue_data = await api.get_game_catalogue(game_code)
-            game_info = catalogue_data.get("game", {})
-            catalogues = catalogue_data.get("catalogues", [])
+            catalogues = await load_denominations(game_code)
 
             if not catalogues:
                 await update.callback_query.answer(
@@ -229,24 +212,15 @@ async def get_instant_purchase_game(update: Update, context: ContextTypes.DEFAUL
                 )
                 return INSTANT_PURCHASE_GAME
 
-            # Get display name using ApiGame if available
             lang = get_lang(update.effective_user.id)
-            default_name = game_info.get("name", game_code)
-            with models.session_scope() as s:
-                api_game = (
-                    s.query(models.ApiGame)
-                    .filter(
-                        models.ApiGame.api_game_code == game_code,
-                        models.ApiGame.is_active == True,
-                    )
-                    .first()
-                )
-                if api_game:
-                    display_name = api_game.get_display_name(lang)
-                else:
-                    display_name = default_name
+            games = context.user_data.get("api_all_games", [])
+            default_name = game_code
+            for g in games:
+                if g.get("code") == game_code:
+                    default_name = g.get("name", game_code)
+                    break
+            display_name = get_api_game_display_name(game_code, default_name, lang)
 
-            # Store game info in context
             context.user_data["api_game_name"] = display_name
             context.user_data["api_catalogues"] = catalogues
             context.user_data["api_denoms_page"] = 0
@@ -274,11 +248,15 @@ def search_games(games: list, query: str, lang: models.Language = None) -> list:
     # Get all active filtered games with their Arabic names for search
     api_games_dict = {}
     if lang:
+        active_provider = get_active_provider_enum()
         with models.session_scope() as s:
             api_games_dict = {
                 game.api_game_code: game
                 for game in s.query(models.ApiGame)
-                .filter(models.ApiGame.is_active == True)
+                .filter(
+                    models.ApiGame.is_active == True,
+                    models.ApiGame.provider == active_provider,
+                )
                 .all()
             }
 
@@ -315,10 +293,7 @@ async def handle_game_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
         games = context.user_data.get("api_all_games", [])
         if not games:
             try:
-                api = G2BulkAPI()
-                api_games = await api.get_games()
-                # Filter to only show active filtered games
-                games = filter_active_games(api_games)
+                games = await fetch_filtered_games()
                 context.user_data["api_all_games"] = games
             except Exception:
                 await update.message.reply_text(
@@ -346,33 +321,18 @@ async def handle_game_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
             game = search_results[0]
             game_code = game.get("code")
 
-            # Validate that the game is an active filtered game
-            with models.session_scope() as s:
-                api_game = (
-                    s.query(models.ApiGame)
-                    .filter(
-                        models.ApiGame.api_game_code == game_code,
-                        models.ApiGame.is_active == True,
-                    )
-                    .first()
+            if not await check_api_game_active(game_code):
+                await update.message.reply_text(
+                    text=TEXTS[lang].get(
+                        "game_not_available", "This game is not available"
+                    ),
                 )
-                if not api_game:
-                    await update.message.reply_text(
-                        text=TEXTS[lang].get(
-                            "game_not_available", "This game is not available"
-                        ),
-                    )
-                    return INSTANT_PURCHASE_GAME
+                return INSTANT_PURCHASE_GAME
 
             context.user_data["api_game_code"] = game_code
 
             try:
-                api = G2BulkAPI()
-
-                # Get game info and catalogue
-                catalogue_data = await api.get_game_catalogue(game_code)
-                game_info = catalogue_data.get("game", {})
-                catalogues = catalogue_data.get("catalogues", [])
+                catalogues = await load_denominations(game_code)
 
                 if not catalogues:
                     await update.message.reply_text(
@@ -382,8 +342,9 @@ async def handle_game_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     )
                     return INSTANT_PURCHASE_GAME
 
-                # Store game info in context
-                context.user_data["api_game_name"] = game_info.get("name", game_code)
+                context.user_data["api_game_name"] = get_api_game_display_name(
+                    game_code, game.get("name", game_code), lang
+                )
                 context.user_data["api_catalogues"] = catalogues
                 context.user_data["api_denoms_page"] = 0
 
@@ -429,10 +390,8 @@ async def back_to_api_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
         games = context.user_data.get("api_all_games", [])
 
         if not games:
-            # Reload games if not in context
             try:
-                api = G2BulkAPI()
-                games = await api.get_games()
+                games = await fetch_filtered_games()
                 context.user_data["api_all_games"] = games
             except Exception:
                 return await instant_purchase(update, context)
@@ -524,89 +483,15 @@ async def get_instant_purchase_denomination(
             return INSTANT_PURCHASE_DENOMINATION
 
         try:
-            api = G2BulkAPI()
             game_code = context.user_data.get("api_game_code")
-
-            # Check if server is required
-            servers = await api.get_game_servers(game_code)
-            context.user_data["api_requires_server"] = servers is not None
-            context.user_data["api_servers"] = servers
-
-            denom_price_usd = float(selected_denom.get("amount", 0))
-
-            # Get exchange rate
-            exchange_rate = get_exchange_rate()
-
-            # Convert price to Sudan currency for display
-            denom_price_sudan = denom_price_usd * exchange_rate
-
-            # Check user balance from database first (in Sudan currency)
-            with models.session_scope() as session:
-                user = session.get(models.User, update.effective_user.id)
-                user_balance_sudan = float(user.balance) if user else 0.0
-
-            if user_balance_sudan < denom_price_sudan:
-                await update.callback_query.answer(
-                    text=TEXTS[lang]
-                    .get(
-                        "insufficient_balance_charge",
-                        "Insufficient balance ❌\nYour current balance: {balance} SDG\nRequired price: {price} SDG\n\nPlease charge your balance first 💰",
-                    )
-                    .format(
-                        balance=format_float(user_balance_sudan),
-                        price=format_float(denom_price_sudan),
-                    ),
-                    show_alert=True,
-                )
-                return INSTANT_PURCHASE_DENOMINATION
-
-            # Check API balance (API uses USD)
-            user_info = await api.get_me()
-            api_balance_usd = float(user_info.get("balance", 0))
-
-            if api_balance_usd < denom_price_usd:
-                await update.callback_query.answer(
-                    text=TEXTS[lang].get(
-                        "product_out_of_stock",
-                        "This product is currently out of stock ❌\nWe apologize for the inconvenience",
-                    ),
-                    show_alert=True,
-                )
-                return INSTANT_PURCHASE_DENOMINATION
-
-            # Check if server is required
-            servers = await api.get_game_servers(game_code)
-            context.user_data["api_requires_server"] = servers is not None
-            context.user_data["api_servers"] = servers
-
-            # Show product details and ask for player ID
-            game_name = context.user_data.get("api_game_name", game_code)
-            denom_name = selected_denom.get("name", "")
-
-            product_details_text = (
-                TEXTS[lang]
-                .get(
-                    "product_details_text",
-                    "<b>Product Details:</b>\n\n"
-                    "🎮 <b>Game:</b> {game_name}\n"
-                    "📦 <b>Denomination:</b> {denomination}\n"
-                    "💰 <b>Price:</b> {price}\n\n"
-                    "{enter_player_id}",
-                )
-                .format(
-                    game_name=escape_html(game_name),
-                    denomination=escape_html(denom_name),
-                    price=f"{format_float(denom_price_sudan)} SDG",
-                    enter_player_id=TEXTS[lang].get(
-                        "enter_player_id", "Enter Player ID:"
-                    ),
-                )
+            next_step, skip_player = await proceed_after_denomination(
+                selected_denom, game_code, context, lang, update
             )
-
-            await update.callback_query.edit_message_text(
-                text=product_details_text,
-                reply_markup=build_player_id_keyboard(lang),
-            )
+            if next_step == "denomination":
+                return INSTANT_PURCHASE_DENOMINATION
+            if skip_player:
+                context.user_data["api_player_id"] = None
+                return await show_order_confirmation(update, context)
             return INSTANT_PURCHASE_PLAYER_ID
         except Exception as e:
             await update.callback_query.answer(
@@ -631,17 +516,15 @@ async def get_instant_purchase_player_id(
         context.user_data["api_player_id"] = player_id
 
         try:
-            api = G2BulkAPI()
+            provider = get_active_provider()
             game_code = context.user_data.get("api_game_code")
             requires_server = context.user_data.get("api_requires_server", False)
 
-            # Validate player ID
             validation_msg = await update.message.reply_text(
                 text=TEXTS[lang].get("validating_player_id", "Validating player ID..."),
             )
 
             if requires_server:
-                # Need server ID first
                 servers = context.user_data.get("api_servers", {})
                 if servers:
                     await validation_msg.delete()
@@ -650,46 +533,29 @@ async def get_instant_purchase_player_id(
                         reply_markup=build_server_keyboard(servers, lang),
                     )
                     return INSTANT_PURCHASE_SERVER_ID
-                else:
-                    # No servers available, proceed without server
-                    await validation_msg.delete()
-                    await update.message.reply_text(
-                        text=TEXTS[lang].get(
-                            "server_not_required", "This game does not require a server"
-                        ),
-                    )
-                    # Proceed to create order
-                    return await create_api_order(update, context)
-            else:
-                # Validate player ID without server
-                try:
-                    check_result = await api.check_player_id(game_code, player_id)
-                    if check_result.get("valid") == "valid":
-                        player_name = check_result.get("name", "N/A")
-                        await validation_msg.edit_text(
-                            text=TEXTS[lang]
-                            .get(
-                                "player_id_valid",
-                                "Player ID validated ✅\nName: {player_name}",
-                            )
-                            .format(player_name=escape_html(player_name)),
-                        )
-                        # Proceed to create order
-                        return await create_api_order(update, context)
-                    else:
-                        await validation_msg.edit_text(
-                            text=TEXTS[lang].get(
-                                "player_id_invalid", "Invalid player ID ❌"
-                            ),
-                        )
-                        return INSTANT_PURCHASE_PLAYER_ID
-                except Exception as e:
+                await validation_msg.delete()
+                return await show_order_confirmation(update, context)
+
+            check_result = await provider.validate_player_id(game_code, player_id)
+            if check_result.valid:
+                if check_result.player_name:
+                    context.user_data["api_player_name"] = check_result.player_name
                     await validation_msg.edit_text(
-                        text=TEXTS[lang].get(
-                            "player_id_invalid", "Invalid player ID ❌"
-                        ),
+                        text=TEXTS[lang]
+                        .get(
+                            "player_id_valid",
+                            "Player ID validated ✅\nName: {player_name}",
+                        )
+                        .format(player_name=escape_html(check_result.player_name)),
                     )
-                    return INSTANT_PURCHASE_PLAYER_ID
+                else:
+                    await validation_msg.delete()
+                return await show_order_confirmation(update, context)
+
+            await validation_msg.edit_text(
+                text=TEXTS[lang].get("player_id_invalid", "Invalid player ID ❌"),
+            )
+            return INSTANT_PURCHASE_PLAYER_ID
         except Exception as e:
             await update.message.reply_text(
                 text=TEXTS[lang].get("api_error", "Error connecting to service"),
@@ -698,6 +564,36 @@ async def get_instant_purchase_player_id(
 
 
 back_to_api_player_id = get_instant_purchase_denomination
+
+
+@is_user_banned
+async def get_instant_purchase_confirm(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Confirm places the order; cancel exits without charging."""
+    if not PrivateChat().filter(update):
+        return ConversationHandler.END
+
+    lang = get_lang(update.effective_user.id)
+    data = update.callback_query.data
+
+    if data == "api_cancel_order":
+        await update.callback_query.answer()
+        clear_instant_purchase_context(context)
+        await update.callback_query.edit_message_text(
+            text=TEXTS[lang].get(
+                "api_purchase_cancelled_no_charge",
+                "Order cancelled. No balance was deducted ✅",
+            ),
+            reply_markup=build_user_keyboard(lang),
+        )
+        return ConversationHandler.END
+
+    if data == "api_confirm_order":
+        await update.callback_query.answer()
+        return await create_api_order(update, context)
+
+    return INSTANT_PURCHASE_CONFIRM
 
 
 @is_user_banned
@@ -723,56 +619,42 @@ async def get_instant_purchase_server_id(
         context.user_data["api_server_id"] = server_id
 
         try:
-            api = G2BulkAPI()
+            provider = get_active_provider()
             game_code = context.user_data.get("api_game_code")
             player_id = context.user_data.get("api_player_id")
 
-            # Validate player ID with server
             validation_msg = await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=TEXTS[lang].get("validating_player_id", "Validating player ID..."),
             )
 
-            try:
-                check_result = await api.check_player_id(
-                    game_code, player_id, server_id
-                )
-                if check_result.get("valid") == "valid":
-                    player_name = check_result.get("name", "N/A")
+            check_result = await provider.validate_player_id(
+                game_code, player_id, server_id
+            )
+            if check_result.valid:
+                if check_result.player_name:
+                    context.user_data["api_player_name"] = check_result.player_name
                     await validation_msg.edit_text(
                         text=TEXTS[lang]
                         .get(
                             "player_id_valid",
                             "Player ID validated ✅\nName: {player_name}",
                         )
-                        .format(player_name=escape_html(player_name)),
+                        .format(player_name=escape_html(check_result.player_name)),
                     )
-                    # Proceed to create order
-                    return await create_api_order(update, context)
                 else:
-                    await validation_msg.edit_text(
-                        text=TEXTS[lang].get(
-                            "player_id_invalid", "Invalid player ID ❌"
-                        ),
-                    )
-                    # Go back to player ID input
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=TEXTS[lang].get("enter_player_id", "Enter Player ID:"),
-                        reply_markup=build_player_id_keyboard(lang),
-                    )
-                    return INSTANT_PURCHASE_PLAYER_ID
-            except Exception as e:
-                await validation_msg.edit_text(
-                    text=TEXTS[lang].get("player_id_invalid", "Invalid player ID ❌"),
-                )
-                # Go back to player ID input
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=TEXTS[lang].get("enter_player_id", "Enter Player ID:"),
-                    reply_markup=build_player_id_keyboard(lang),
-                )
-                return INSTANT_PURCHASE_PLAYER_ID
+                    await validation_msg.delete()
+                return await show_order_confirmation(update, context)
+
+            await validation_msg.edit_text(
+                text=TEXTS[lang].get("player_id_invalid", "Invalid player ID ❌"),
+            )
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=TEXTS[lang].get("enter_player_id", "Enter Player ID:"),
+                reply_markup=build_player_id_keyboard(lang),
+            )
+            return INSTANT_PURCHASE_PLAYER_ID
         except Exception as e:
             await update.callback_query.answer(
                 text=TEXTS[lang].get("api_error", "Error connecting to service"),
@@ -788,43 +670,65 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = get_lang(update.effective_user.id)
 
         try:
-            api = G2BulkAPI()
+            provider = get_active_provider()
+            api_provider = get_active_provider_enum()
             game_code = context.user_data.get("api_game_code")
             game_name = context.user_data.get("api_game_name", game_code)
             selected_denom = context.user_data.get("api_selected_denom", {})
             player_id = context.user_data.get("api_player_id")
             server_id = context.user_data.get("api_server_id")
+            player_name = context.user_data.pop("api_player_name", None)
 
             denom_name = selected_denom.get("name", "")
             denom_price_usd = float(selected_denom.get("amount", 0))
+            product_id = None
+            try:
+                product_id = (
+                    int(selected_denom.get("id")) if selected_denom.get("id") else None
+                )
+            except (TypeError, ValueError):
+                product_id = None
 
-            # Get exchange rate
             exchange_rate = get_exchange_rate()
-
-            # Convert price to Sudan currency for display
             denom_price_sudan = denom_price_usd * exchange_rate
+            provider_logging.log_price_conversion(
+                api_provider.value,
+                "charge_user_balance",
+                denom_name,
+                denom_price_usd,
+                "USD",
+                user_id=update.effective_user.id,
+                product_id=str(product_id) if product_id else None,
+            )
 
-            # Show processing message
-            processing_msg = await update.message.reply_text(
+            msg_target = update.message or (
+                update.callback_query.message if update.callback_query else None
+            )
+            processing_msg = await msg_target.reply_text(
                 text=TEXTS[lang].get("order_processing", "Processing order..."),
             )
 
-            # Create order
+            denomination = catalogue_to_denomination(selected_denom)
+            remark = f"Order from Telegram Bot - User ID: {update.effective_user.id}"
+            idempotency_key = str(uuid.uuid4())
+
             try:
-                order_data = await api.create_game_order(
+                result = await provider.create_order(
                     game_code=game_code,
-                    catalogue_name=denom_name,
+                    denomination=denomination,
                     player_id=player_id,
                     server_id=server_id,
-                    remark=f"Order from Telegram Bot - User ID: {update.effective_user.id}",
+                    remark=remark,
+                    idempotency_key=idempotency_key,
                 )
             except Exception as e:
-                # Handle API errors (e.g., product out of stock, invalid data, etc.)
                 error_message = str(e)
                 if (
                     "out of stock" in error_message.lower()
                     or "not available" in error_message.lower()
                     or "insufficient" in error_message.lower()
+                    or "402" in error_message
+                    or "409" in error_message
                 ):
                     await processing_msg.edit_text(
                         text=TEXTS[lang].get(
@@ -840,12 +744,14 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 return ConversationHandler.END
 
-            if order_data.get("success"):
-                order_info = order_data.get("order", {})
-                api_order_id = order_info.get("order_id")
-                api_message = order_data.get("message", "")
+            if result.success and result.external_id:
+                api_order_id = result.external_id
+                api_message = result.message
+                if result.player_name:
+                    player_name = result.player_name
 
-                # Store order in database and deduct balance
+                from decimal import Decimal
+
                 with models.session_scope() as s:
                     user = s.get(models.User, update.effective_user.id)
                     if not user:
@@ -854,29 +760,31 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         return ConversationHandler.END
 
-                    # Deduct balance in SDG (API already deducted from their balance)
-                    from decimal import Decimal
-
                     user.balance -= Decimal(str(denom_price_sudan))
 
                     api_order = models.ApiPurchaseOrder(
                         user_id=update.effective_user.id,
+                        api_provider=api_provider,
                         api_order_id=api_order_id,
                         api_game_code=game_code,
+                        product_id=product_id,
                         denomination_name=denom_name,
                         player_id=player_id,
-                        player_name=order_info.get("player_name"),
+                        player_name=player_name,
                         server_id=server_id,
                         price_usd=denom_price_usd,
                         price_sudan=denom_price_sudan,
-                        status=models.ApiPurchaseOrderStatus.PENDING,
+                        status=(
+                            models.ApiPurchaseOrderStatus.PROCESSING
+                            if api_provider == models.ApiProvider.GAMEVOUCHERS
+                            else models.ApiPurchaseOrderStatus.PENDING
+                        ),
                         api_message=api_message,
-                        remark=f"Order from Telegram Bot - User ID: {update.effective_user.id}",
+                        remark=remark,
                     )
                     s.add(api_order)
-                    s.commit()  # Commit to save balance deduction
+                    s.commit()
 
-                    # Show success message
                     order_text = (
                         TEXTS[lang]
                         .get(
@@ -885,6 +793,11 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         .format(order_id=api_order_id)
                     )
+                    if selected_denom.get("delivery_mode") == "async":
+                        order_text += "\n\n" + TEXTS[lang].get(
+                            "order_async_hint",
+                            "Your order is processing. You will be notified when it completes.",
+                        )
                     order_details = (
                         TEXTS[lang]
                         .get(
@@ -902,21 +815,17 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             game_name=escape_html(game_name),
                             denomination=escape_html(denom_name),
                             price=format_float(denom_price_sudan),
-                            player_id=escape_html(player_id),
+                            player_id=escape_html(player_id or "—"),
                             balance=format_float(user.balance),
                         )
                     )
                     order_text += f"\n\n{order_details}"
 
-                await processing_msg.edit_text(
-                    text=order_text,
-                )
+                await processing_msg.edit_text(text=order_text)
             else:
-                error_msg = order_data.get(
-                    "message",
-                    TEXTS[lang].get("api_error", "Error connecting to service"),
+                error_msg = result.message or TEXTS[lang].get(
+                    "api_error", "Error connecting to service"
                 )
-                # Check if error is about product availability
                 if (
                     "out of stock" in error_msg.lower()
                     or "not available" in error_msg.lower()
@@ -935,29 +844,24 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         .format(error=error_msg),
                     )
 
-            # Clean up user_data
-            context.user_data.pop("api_game_code", None)
-            context.user_data.pop("api_game_name", None)
-            context.user_data.pop("api_catalogues", None)
-            context.user_data.pop("api_selected_denom", None)
-            context.user_data.pop("api_player_id", None)
-            context.user_data.pop("api_server_id", None)
-            context.user_data.pop("api_requires_server", None)
-            context.user_data.pop("api_servers", None)
+            clear_instant_purchase_context(context)
 
-            # Return to home page
-            await update.message.reply_text(
+            await msg_target.reply_text(
                 text=TEXTS[lang].get("home_page", "Home Page 🔝"),
                 reply_markup=build_user_keyboard(lang),
             )
 
         except Exception as e:
             error_msg = str(e)
-            await update.message.reply_text(
-                text=TEXTS[lang]
-                .get("order_created_error", "Error creating order ❌\n{error}")
-                .format(error=error_msg),
+            err_target = update.message or (
+                update.callback_query.message if update.callback_query else None
             )
+            if err_target:
+                await err_target.reply_text(
+                    text=TEXTS[lang]
+                    .get("order_created_error", "Error creating order ❌\n{error}")
+                    .format(error=error_msg),
+                )
         return ConversationHandler.END
 
 
@@ -996,6 +900,12 @@ instant_purchase_handler = ConversationHandler(
             CallbackQueryHandler(
                 get_instant_purchase_server_id,
                 r"^api_server_",
+            ),
+        ],
+        INSTANT_PURCHASE_CONFIRM: [
+            CallbackQueryHandler(
+                get_instant_purchase_confirm,
+                r"^api_confirm_order$|^api_cancel_order$",
             ),
         ],
     },

@@ -350,6 +350,14 @@ TEXTS = {
         "orders_settings_title": "إدارة الطلبات 📋",
         # General Settings
         "general_settings_title": "الإعدادات العامة ⚙️",
+        "api_provider_settings_title": "اختر المزود النشط (واحد فقط):\n\nالحالي: {provider}",
+        "api_provider_updated": "تم تحديث المزود ✅",
+        "api_provider_switch_warning": "تم التحديث. راجع تصفية ألعاب API للكتالوج الجديد. الطلبات المعلقة تبقى على المزود الأصلي.",
+        "api_provider": "المزود",
+        "api_provider_g2bulk": "G2Bulk",
+        "api_provider_gamevouchers": "Game Vouchers",
+        "voucher_codes": "أكواد القسائم",
+        "order_async_hint": "طلبك قيد المعالجة. سيتم إشعارك عند الاكتمال.",
         "current_usd_to_sudan_rate": "سعر الصرف الحالي: <code>{rate}</code>",
         "enter_usd_to_sudan_rate": (
             "أدخل سعر صرف الدولار إلى العملة السودانية:\n"
@@ -426,6 +434,17 @@ TEXTS = {
         "message": "رسالة",
         "remark": "ملاحظة",
         "api_error": "حدث خطأ في الاتصال بالخدمة ❌",
+        "order_confirm_summary": (
+            "<b>تأكيد الطلب</b>\n\n"
+            "🎮 <b>اللعبة:</b> {game_name}\n"
+            "📦 <b>الحزمة:</b> {denomination}\n"
+            "💰 <b>السعر:</b> <code>{price} SDG</code>\n"
+            "{player_line}"
+            "{server_line}\n"
+            "💳 <b>رصيدك الحالي:</b> <code>{balance} SDG</code>\n\n"
+            "اضغط <b>تأكيد</b> لإتمام الشراء، أو <b>إلغاء</b> للخروج دون خصم أي رصيد."
+        ),
+        "api_purchase_cancelled_no_charge": "تم إلغاء الطلب. لم يتم خصم أي رصيد من حسابك ✅",
         "order_details": (
             "تفاصيل الطلب:\n"
             "اللعبة: <b>{game_name}</b>\n"
@@ -816,6 +835,14 @@ TEXTS = {
         "orders_settings_title": "Orders Management 📋",
         # General Settings
         "general_settings_title": "General Settings ⚙️",
+        "api_provider_settings_title": "Select active provider (only one at a time):\n\nCurrent: {provider}",
+        "api_provider_updated": "Provider updated ✅",
+        "api_provider_switch_warning": "Provider updated. Re-check Filter API Games for the new catalog. Pending orders keep their original provider.",
+        "api_provider": "Provider",
+        "api_provider_g2bulk": "G2Bulk",
+        "api_provider_gamevouchers": "Game Vouchers",
+        "voucher_codes": "Voucher Codes",
+        "order_async_hint": "Your order is processing. You will be notified when it completes.",
         "current_usd_to_sudan_rate": "Current Exchange Rate: <code>{rate}</code>",
         "enter_usd_to_sudan_rate": (
             "Enter USD to Sudan Currency exchange rate:\n"
@@ -903,6 +930,17 @@ TEXTS = {
         "message": "Message",
         "remark": "Remark",
         "api_error": "Error connecting to service ❌",
+        "order_confirm_summary": (
+            "<b>Confirm your order</b>\n\n"
+            "🎮 <b>Game:</b> {game_name}\n"
+            "📦 <b>Product:</b> {denomination}\n"
+            "💰 <b>Price:</b> <code>{price} SDG</code>\n"
+            "{player_line}"
+            "{server_line}\n"
+            "💳 <b>Your balance:</b> <code>{balance} SDG</code>\n\n"
+            "Press <b>Confirm</b> to place the order, or <b>Cancel</b> to exit without charging your balance."
+        ),
+        "api_purchase_cancelled_no_charge": "Order cancelled. No balance was deducted ✅",
         "order_details": (
             "Order Details:\n"
             "Game: <b>{game_name}</b>\n"
@@ -980,6 +1018,7 @@ BUTTONS = {
         "show_force_join_chats": "عرض المحادثات 👓",
         "select_chat_button": "اختيار محادثة",
         "confirm_button": "تأكيد ✅",
+        "cancel_order_button": "إلغاء ❌",
         "bot": "بوت 🤖",
         "channel": "قناة 📢",
         "group": "مجموعة 👥",
@@ -1010,6 +1049,7 @@ BUTTONS = {
         # General Settings
         "general_settings": "الإعدادات العامة ⚙️",
         "usd_to_sudan_rate": "سعر صرف الدولار إلى العملة السودانية",
+        "api_provider_settings": "المزود",
         "change_status": "تغيير الحالة",
         "add_notes": "إضافة ملاحظات",
         "select_order_status": "اختر حالة الطلب:",
@@ -1105,6 +1145,7 @@ BUTTONS = {
         "show_force_join_chats": "Show Chats 👓",
         "select_chat_button": "Select Chat",
         "confirm_button": "Confirm ✅",
+        "cancel_order_button": "Cancel ❌",
         "bot": "Bot 🤖",
         "channel": "Channel 📢",
         "group": "Group 👥",
@@ -1129,6 +1170,9 @@ BUTTONS = {
         # General Settings
         "general_settings": "General Settings ⚙️",
         "usd_to_sudan_rate": "USD to Sudan Currency Exchange Rate",
+        "api_provider_settings": "Provider",
+        "api_provider_g2bulk": "G2Bulk",
+        "api_provider_gamevouchers": "Game Vouchers",
         "export_users_to_excel": "Export Users to Excel 📊",
         "games_settings": "Games Settings 🎮",
         "items_settings": "Items Settings 🎯",

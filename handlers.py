@@ -112,6 +112,7 @@ def setup_and_run():
     # GENERAL SETTINGS
     app.add_handler(general_settings_handler)
     app.add_handler(set_usd_to_sudan_rate_handler)
+    app.add_handler(api_provider_handler)
 
     # FILTER API GAMES SETTINGS
     app.add_handler(filter_api_games_settings_handler)

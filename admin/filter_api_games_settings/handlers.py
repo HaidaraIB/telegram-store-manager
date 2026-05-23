@@ -19,11 +19,11 @@ from common.keyboards import (
     build_back_button,
 )
 from common.lang_dicts import TEXTS, get_lang
-from common.common import escape_html
 from custom_filters import PrivateChatAndAdmin, PermissionFilter
 from start import admin_command, start_command
-from services.g2bulk_api import G2BulkAPI
 import models
+from services.provider_factory import get_active_provider, get_active_provider_enum
+from services.api_purchase_helpers import games_to_dict
 
 # Conversation states
 SETTING_ARABIC_NAME = range(1)
@@ -62,9 +62,8 @@ async def filter_api_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = get_lang(update.effective_user.id)
 
         try:
-            # Fetch games from API
-            api = G2BulkAPI()
-            api_games = await api.get_games()
+            provider = get_active_provider()
+            api_games = games_to_dict(await provider.list_games())
 
             if not api_games:
                 await update.callback_query.answer(
@@ -75,10 +74,13 @@ async def filter_api_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return ConversationHandler.END
 
-            # Get existing games from database
+            active_provider = get_active_provider_enum()
             with models.session_scope() as s:
                 existing_games = {
-                    game.api_game_code: game for game in s.query(models.ApiGame).all()
+                    game.api_game_code: game
+                    for game in s.query(models.ApiGame)
+                    .filter(models.ApiGame.provider == active_provider)
+                    .all()
                 }
 
             # Store games in context for pagination
@@ -131,14 +133,17 @@ async def handle_api_games_pagination(
 
             if not api_games:
                 # Reload games if not in context
-                api = G2BulkAPI()
-                api_games = await api.get_games()
+                provider = get_active_provider()
+                api_games = games_to_dict(await provider.list_games())
                 context.user_data["api_all_games"] = api_games
 
-            # Get existing games from database
+            active_provider = get_active_provider_enum()
             with models.session_scope() as s:
                 existing_games = {
-                    game.api_game_code: game for game in s.query(models.ApiGame).all()
+                    game.api_game_code: game
+                    for game in s.query(models.ApiGame)
+                    .filter(models.ApiGame.provider == active_provider)
+                    .all()
                 }
 
             total_pages = (len(api_games) + 10 - 1) // 10
@@ -192,21 +197,23 @@ async def show_api_game_details(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return ConversationHandler.END
 
-        # Get existing game from database if exists
+        active_provider = get_active_provider_enum()
         with models.session_scope() as s:
             existing_game = (
                 s.query(models.ApiGame)
-                .filter(models.ApiGame.api_game_code == game_code)
+                .filter(
+                    models.ApiGame.api_game_code == game_code,
+                    models.ApiGame.provider == active_provider,
+                )
                 .first()
             )
 
             if existing_game:
-                # Game exists in database
                 text = existing_game.stringify(lang)
                 has_arabic_name = True
             else:
-                # Game doesn't exist - create it
                 new_game = models.ApiGame(
+                    provider=active_provider,
                     api_game_code=game_code,
                     api_game_name=game_info.get("name", game_code),
                     arabic_name=None,
@@ -262,11 +269,14 @@ async def back_to_set_arabic_name(update: Update, context: ContextTypes.DEFAULT_
         game_code = context.user_data.get("editing_game_code")
 
         if game_code:
-            # Reload game details
+            active_provider = get_active_provider_enum()
             with models.session_scope() as s:
                 game = (
                     s.query(models.ApiGame)
-                    .filter(models.ApiGame.api_game_code == game_code)
+                    .filter(
+                        models.ApiGame.api_game_code == game_code,
+                        models.ApiGame.provider == active_provider,
+                    )
                     .first()
                 )
                 if game:
@@ -297,10 +307,14 @@ async def save_arabic_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
 
+        active_provider = get_active_provider_enum()
         with models.session_scope() as s:
             game = (
                 s.query(models.ApiGame)
-                .filter(models.ApiGame.api_game_code == game_code)
+                .filter(
+                    models.ApiGame.api_game_code == game_code,
+                    models.ApiGame.provider == active_provider,
+                )
                 .first()
             )
             if game:
@@ -329,10 +343,14 @@ async def toggle_api_game_status(update: Update, context: ContextTypes.DEFAULT_T
 
         game_code = update.callback_query.data.replace("toggle_api_game_status_", "")
 
+        active_provider = get_active_provider_enum()
         with models.session_scope() as s:
             game = (
                 s.query(models.ApiGame)
-                .filter(models.ApiGame.api_game_code == game_code)
+                .filter(
+                    models.ApiGame.api_game_code == game_code,
+                    models.ApiGame.provider == active_provider,
+                )
                 .first()
             )
             if game:
@@ -370,16 +388,19 @@ async def back_to_api_games_list(update: Update, context: ContextTypes.DEFAULT_T
         if not api_games:
             # Reload games if not in context
             try:
-                api = G2BulkAPI()
-                api_games = await api.get_games()
+                provider = get_active_provider()
+                api_games = games_to_dict(await provider.list_games())
                 context.user_data["api_all_games"] = api_games
             except Exception:
                 return await filter_api_games_settings(update, context)
 
-        # Get existing games from database
+        active_provider = get_active_provider_enum()
         with models.session_scope() as s:
             existing_games = {
-                game.api_game_code: game for game in s.query(models.ApiGame).all()
+                game.api_game_code: game
+                for game in s.query(models.ApiGame)
+                .filter(models.ApiGame.provider == active_provider)
+                .all()
             }
 
         page = context.user_data.get("api_games_page", 0)
@@ -465,9 +486,13 @@ async def manage_filtered_games(update: Update, context: ContextTypes.DEFAULT_TY
     ).filter(update):
         lang = get_lang(update.effective_user.id)
 
+        active_provider = get_active_provider_enum()
         with models.session_scope() as s:
             filtered_games = (
-                s.query(models.ApiGame).order_by(models.ApiGame.api_game_name).all()
+                s.query(models.ApiGame)
+                .filter(models.ApiGame.provider == active_provider)
+                .order_by(models.ApiGame.api_game_name)
+                .all()
             )
 
             if not filtered_games:
@@ -518,10 +543,11 @@ async def handle_filtered_games_pagination(
         try:
             page = int(page_str)
             
-            # Always read from database
+            active_provider = get_active_provider_enum()
             with models.session_scope() as s:
                 filtered_games = (
                     s.query(models.ApiGame)
+                    .filter(models.ApiGame.provider == active_provider)
                     .order_by(models.ApiGame.api_game_name)
                     .all()
                 )
@@ -564,10 +590,14 @@ async def show_filtered_game_details(
 
         game_code = update.callback_query.data.replace("filtered_game_manage_", "")
 
+        active_provider = get_active_provider_enum()
         with models.session_scope() as s:
             game = (
                 s.query(models.ApiGame)
-                .filter(models.ApiGame.api_game_code == game_code)
+                .filter(
+                    models.ApiGame.api_game_code == game_code,
+                    models.ApiGame.provider == active_provider,
+                )
                 .first()
             )
 
@@ -602,10 +632,13 @@ async def back_to_filtered_games_list(
     ).filter(update):
         lang = get_lang(update.effective_user.id)
 
-        # Always read from database
+        active_provider = get_active_provider_enum()
         with models.session_scope() as s:
             filtered_games = (
-                s.query(models.ApiGame).order_by(models.ApiGame.api_game_name).all()
+                s.query(models.ApiGame)
+                .filter(models.ApiGame.provider == active_provider)
+                .order_by(models.ApiGame.api_game_name)
+                .all()
             )
 
         page = context.user_data.get("filtered_games_page", 0)

@@ -1,6 +1,9 @@
+import logging
 import aiohttp
 from typing import Optional, Dict, List, Any
 from Config import Config
+
+logger = logging.getLogger("services.api_provider.http")
 
 
 class G2BulkAPI:
@@ -16,12 +19,18 @@ class G2BulkAPI:
 
     async def get_me(self) -> Dict[str, Any]:
         """Get authenticated user details including balance"""
+        logger.debug("G2Bulk GET /getMe")
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{self.BASE_URL}/getMe", headers=self._get_headers()
             ) as response:
                 if response.status == 200:
-                    return await response.json()
+                    data = await response.json()
+                    logger.debug(
+                        "G2Bulk getMe balance=%s",
+                        data.get("balance", data.get("usd_balance")),
+                    )
+                    return data
                 else:
                     error_data = await response.json()
                     raise Exception(
@@ -103,13 +112,26 @@ class G2BulkAPI:
 
     async def get_game_catalogue(self, game_code: str) -> Dict[str, Any]:
         """Get all available denominations/packages for a specific game"""
+        path = f"/games/{game_code}/catalogue"
+        logger.debug("G2Bulk GET %s", path)
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{self.BASE_URL}/games/{game_code}/catalogue",
+                f"{self.BASE_URL}{path}",
                 headers=self._get_headers(),
             ) as response:
                 if response.status == 200:
-                    return await response.json()
+                    data = await response.json()
+                    catalogues = data.get("catalogues", [])
+                    logger.debug(
+                        "G2Bulk catalogue %s items=%d sample=%s",
+                        game_code,
+                        len(catalogues),
+                        [
+                            {"name": c.get("name"), "amount": c.get("amount")}
+                            for c in catalogues[:3]
+                        ],
+                    )
+                    return data
                 else:
                     error_data = await response.json()
                     raise Exception(
