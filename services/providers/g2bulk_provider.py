@@ -91,6 +91,7 @@ class G2BulkProvider:
         server_id: Optional[str] = None,
         remark: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        quantity: int = 1,
     ) -> CreateOrderResult:
         provider_logging.log_price_conversion(
             self._log_name,

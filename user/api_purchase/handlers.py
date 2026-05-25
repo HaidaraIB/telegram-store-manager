@@ -24,7 +24,20 @@ from user.api_purchase.api_helpers import (
     check_api_game_active,
     proceed_after_denomination,
     show_order_confirmation,
+    show_quantity_step,
     clear_instant_purchase_context,
+    selected_denom_requires_player_id,
+    prompt_player_id_step,
+    is_voucher_denom,
+    get_order_quantity,
+    get_max_voucher_quantity,
+    compute_order_totals,
+    get_unit_price_usd,
+    INSTANT_PURCHASE_GAME,
+    INSTANT_PURCHASE_DENOMINATION,
+    INSTANT_PURCHASE_QUANTITY,
+    INSTANT_PURCHASE_PLAYER_ID,
+    INSTANT_PURCHASE_SERVER_ID,
     INSTANT_PURCHASE_CONFIRM,
 )
 from user.api_purchase.keyboards import (
@@ -36,15 +49,6 @@ from user.api_purchase.keyboards import (
     filter_active_games,
 )
 import models
-
-# Conversation states for instant purchase
-(
-    INSTANT_PURCHASE_GAME,
-    INSTANT_PURCHASE_DENOMINATION,
-    INSTANT_PURCHASE_PLAYER_ID,
-    INSTANT_PURCHASE_SERVER_ID,
-) = range(4)
-# INSTANT_PURCHASE_CONFIRM is defined in api_helpers (value 4)
 
 
 @is_user_banned
@@ -489,6 +493,10 @@ async def get_instant_purchase_denomination(
             )
             if next_step == "denomination":
                 return INSTANT_PURCHASE_DENOMINATION
+            if next_step == "quantity":
+                context.user_data.pop("api_quantity", None)
+                context.user_data["api_player_id"] = None
+                return await show_quantity_step(update, context)
             if skip_player:
                 context.user_data["api_player_id"] = None
                 return await show_order_confirmation(update, context)
@@ -502,6 +510,108 @@ async def get_instant_purchase_denomination(
 
 
 back_to_api_denom = get_instant_purchase_game
+
+
+@is_user_banned
+async def get_instant_purchase_quantity(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Voucher flow: user enters how many codes to buy."""
+    if not PrivateChat().filter(update):
+        return ConversationHandler.END
+
+    lang = get_lang(update.effective_user.id)
+    selected_denom = context.user_data.get("api_selected_denom", {})
+    if not is_voucher_denom(selected_denom):
+        return await show_order_confirmation(update, context)
+
+    max_qty = get_max_voucher_quantity(selected_denom)
+    try:
+        quantity = int(update.message.text.strip())
+    except (TypeError, ValueError):
+        quantity = 0
+
+    if quantity < 1 or quantity > max_qty:
+        await update.message.reply_text(
+            text=TEXTS[lang]
+            .get("invalid_quantity", "Invalid quantity. Enter a number from 1 to {max}.")
+            .format(max=max_qty),
+        )
+        return INSTANT_PURCHASE_QUANTITY
+
+    total_usd, total_sudan = compute_order_totals(selected_denom, quantity)
+    unit_usd = get_unit_price_usd(selected_denom)
+
+    with models.session_scope() as session:
+        user = session.get(models.User, update.effective_user.id)
+        user_balance_sudan = float(user.balance) if user else 0.0
+
+    if user_balance_sudan < total_sudan:
+        await update.message.reply_text(
+            text=TEXTS[lang]
+            .get(
+                "insufficient_balance_charge",
+                "Insufficient balance ❌\nYour current balance: {balance} SDG\nRequired price: {price} SDG\n\nPlease charge your balance first 💰",
+            )
+            .format(
+                balance=format_float(user_balance_sudan),
+                price=format_float(total_sudan),
+            ),
+        )
+        return INSTANT_PURCHASE_QUANTITY
+
+    provider = get_active_provider()
+    active_provider = get_active_provider_enum()
+    balance_info = await provider.get_balance()
+    if balance_info.available_usd < total_usd:
+        await update.message.reply_text(
+            text=TEXTS[lang].get(
+                "product_out_of_stock",
+                "This product is currently out of stock ❌\nWe apologize for the inconvenience",
+            ),
+        )
+        return INSTANT_PURCHASE_QUANTITY
+
+    stock = int(selected_denom.get("stock", 0) or 0)
+    if stock > 0 and quantity > stock:
+        await update.message.reply_text(
+            text=TEXTS[lang]
+            .get("invalid_quantity", "Invalid quantity. Enter a number from 1 to {max}.")
+            .format(max=min(max_qty, stock)),
+        )
+        return INSTANT_PURCHASE_QUANTITY
+
+    provider_logging.log_price_conversion(
+        active_provider.value,
+        "voucher_quantity_selected",
+        selected_denom.get("name", ""),
+        total_usd,
+        selected_denom.get("currency", "USD"),
+        user_id=update.effective_user.id,
+        product_id=str(selected_denom.get("id", "")),
+    )
+    provider_logging.log_api_call(
+        active_provider.value,
+        "voucher_quantity_selected",
+        quantity=quantity,
+        unit_usd=unit_usd,
+        total_usd=total_usd,
+        user_id=update.effective_user.id,
+    )
+
+    context.user_data["api_quantity"] = quantity
+    return await show_order_confirmation(update, context)
+
+
+@is_user_banned
+async def back_to_quantity_step(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Re-show quantity prompt from confirm screen."""
+    if PrivateChat().filter(update):
+        await update.callback_query.answer()
+        return await show_quantity_step(update, context)
+    return ConversationHandler.END
 
 
 @is_user_banned
@@ -590,6 +700,14 @@ async def get_instant_purchase_confirm(
         return ConversationHandler.END
 
     if data == "api_confirm_order":
+        selected_denom = context.user_data.get("api_selected_denom", {})
+        if is_voucher_denom(selected_denom) and not context.user_data.get("api_quantity"):
+            await update.callback_query.answer()
+            return await show_quantity_step(update, context)
+        if selected_denom_requires_player_id(selected_denom):
+            player_id = (context.user_data.get("api_player_id") or "").strip()
+            if not player_id:
+                return await prompt_player_id_step(update, context, lang)
         await update.callback_query.answer()
         return await create_api_order(update, context)
 
@@ -679,8 +797,31 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             server_id = context.user_data.get("api_server_id")
             player_name = context.user_data.pop("api_player_name", None)
 
+            if selected_denom_requires_player_id(selected_denom):
+                player_id = (player_id or "").strip()
+                if not player_id:
+                    if update.callback_query:
+                        return await prompt_player_id_step(update, context, lang)
+                    await update.message.reply_text(
+                        text=TEXTS[lang].get(
+                            "player_id_required",
+                            "Player ID is required for this product ❗️",
+                        ),
+                    )
+                    return ConversationHandler.END
+
             denom_name = selected_denom.get("name", "")
-            denom_price_usd = float(selected_denom.get("amount", 0))
+            quantity = (
+                get_order_quantity(context)
+                if is_voucher_denom(selected_denom)
+                else 1
+            )
+            unit_price_usd = get_unit_price_usd(selected_denom)
+            denom_price_usd, denom_price_sudan = compute_order_totals(
+                selected_denom, quantity
+            )
+            if quantity > 1:
+                denom_name = f"{denom_name} x{quantity}"
             product_id = None
             try:
                 product_id = (
@@ -689,8 +830,6 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except (TypeError, ValueError):
                 product_id = None
 
-            exchange_rate = get_exchange_rate()
-            denom_price_sudan = denom_price_usd * exchange_rate
             provider_logging.log_price_conversion(
                 api_provider.value,
                 "charge_user_balance",
@@ -720,6 +859,7 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     server_id=server_id,
                     remark=remark,
                     idempotency_key=idempotency_key,
+                    quantity=quantity,
                 )
             except Exception as e:
                 error_message = str(e)
@@ -743,6 +883,17 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         .format(error=error_message),
                     )
                 return ConversationHandler.END
+
+            if not result.success and denomination.requires_player_id and not (
+                player_id and str(player_id).strip()
+            ):
+                await processing_msg.edit_text(
+                    text=TEXTS[lang].get(
+                        "player_id_required",
+                        "Player ID is required for this product ❗️",
+                    ),
+                )
+                return await prompt_player_id_step(update, context, lang)
 
             if result.success and result.external_id:
                 api_order_id = result.external_id
@@ -798,27 +949,17 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             "order_async_hint",
                             "Your order is processing. You will be notified when it completes.",
                         )
-                    order_details = (
-                        TEXTS[lang]
-                        .get(
-                            "order_details",
-                            (
-                                "Order Details:\n"
-                                "Game: {game_name}\n"
-                                "Denomination: {denomination}\n"
-                                "Price: {price}\n"
-                                "Player ID: {player_id}\n"
-                                "Current Balance: {balance}"
-                            ),
-                        )
-                        .format(
-                            game_name=escape_html(game_name),
-                            denomination=escape_html(denom_name),
-                            price=format_float(denom_price_sudan),
-                            player_id=escape_html(player_id or "—"),
-                            balance=format_float(user.balance),
-                        )
-                    )
+                    order_lines = [
+                        f"Game: {escape_html(game_name)}",
+                        f"Denomination: {escape_html(denom_name)}",
+                        f"Price: {format_float(denom_price_sudan)}",
+                    ]
+                    if player_id:
+                        order_lines.append(f"Player ID: {escape_html(player_id)}")
+                    order_lines.append(f"Current Balance: {format_float(user.balance)}")
+                    order_details = TEXTS[lang].get(
+                        "order_details_header", "Order Details:\n"
+                    ) + "\n".join(order_lines)
                     order_text += f"\n\n{order_details}"
 
                 await processing_msg.edit_text(text=order_text)
@@ -890,6 +1031,12 @@ instant_purchase_handler = ConversationHandler(
                 r"^(api_denom_|api_denoms_page_)",
             ),
         ],
+        INSTANT_PURCHASE_QUANTITY: [
+            MessageHandler(
+                callback=get_instant_purchase_quantity,
+                filters=filters.TEXT & ~filters.COMMAND,
+            ),
+        ],
         INSTANT_PURCHASE_PLAYER_ID: [
             MessageHandler(
                 callback=get_instant_purchase_player_id,
@@ -916,5 +1063,6 @@ instant_purchase_handler = ConversationHandler(
         CallbackQueryHandler(back_to_api_game, r"^back_to_api_game$"),
         CallbackQueryHandler(back_to_api_denom, r"^back_to_api_denom$"),
         CallbackQueryHandler(back_to_api_player_id, r"^back_to_api_player_id$"),
+        CallbackQueryHandler(back_to_quantity_step, r"^back_to_api_quantity$"),
     ],
 )

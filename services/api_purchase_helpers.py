@@ -18,6 +18,8 @@ def denoms_to_catalogues(denoms: List[DenominationItem]) -> list:
                 "currency": raw.get("currency", "USD"),
                 "requires_player_id": d.requires_player_id,
                 "product_type": d.product_type.value,
+                "uses_quantity_flow": bool((d.raw or {}).get("uses_quantity_flow")),
+                "category_name": (d.raw or {}).get("category_name", ""),
                 "delivery_mode": d.delivery_mode,
                 "stock": d.stock,
             }

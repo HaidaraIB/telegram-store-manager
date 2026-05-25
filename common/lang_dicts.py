@@ -438,13 +438,26 @@ TEXTS = {
             "<b>تأكيد الطلب</b>\n\n"
             "🎮 <b>اللعبة:</b> {game_name}\n"
             "📦 <b>الحزمة:</b> {denomination}\n"
+            "{quantity_line}"
             "💰 <b>السعر:</b> <code>{price} SDG</code>\n"
             "{player_line}"
             "{server_line}\n"
             "💳 <b>رصيدك الحالي:</b> <code>{balance} SDG</code>\n\n"
             "اضغط <b>تأكيد</b> لإتمام الشراء، أو <b>إلغاء</b> للخروج دون خصم أي رصيد."
         ),
+        "order_confirm_quantity_line": "🔢 <b>الكمية:</b> {quantity}\n",
+        "enter_quantity": "أدخل الكمية (1-{max}):",
+        "invalid_quantity": "كمية غير صالحة. أدخل رقماً من 1 إلى {max}.",
+        "voucher_quantity_details_text": (
+            "<b>تفاصيل المنتج:</b>\n\n"
+            "🎮 <b>اللعبة:</b> {game_name}\n"
+            "📦 <b>الحزمة:</b> {denomination}\n"
+            "💰 <b>سعر الوحدة:</b> <code>{unit_price}</code> SDG\n\n"
+            "{enter_quantity}"
+        ),
         "api_purchase_cancelled_no_charge": "تم إلغاء الطلب. لم يتم خصم أي رصيد من حسابك ✅",
+        "player_id_required": "معرف اللاعب مطلوب لهذا المنتج ❗️",
+        "order_details_header": "تفاصيل الطلب:\n",
         "order_details": (
             "تفاصيل الطلب:\n"
             "اللعبة: <b>{game_name}</b>\n"
@@ -934,13 +947,26 @@ TEXTS = {
             "<b>Confirm your order</b>\n\n"
             "🎮 <b>Game:</b> {game_name}\n"
             "📦 <b>Product:</b> {denomination}\n"
+            "{quantity_line}"
             "💰 <b>Price:</b> <code>{price} SDG</code>\n"
             "{player_line}"
             "{server_line}\n"
             "💳 <b>Your balance:</b> <code>{balance} SDG</code>\n\n"
             "Press <b>Confirm</b> to place the order, or <b>Cancel</b> to exit without charging your balance."
         ),
+        "order_confirm_quantity_line": "🔢 <b>Quantity:</b> {quantity}\n",
+        "enter_quantity": "Enter quantity (1-{max}):",
+        "invalid_quantity": "Invalid quantity. Enter a number from 1 to {max}.",
+        "voucher_quantity_details_text": (
+            "<b>Product Details:</b>\n\n"
+            "🎮 <b>Game:</b> {game_name}\n"
+            "📦 <b>Product:</b> {denomination}\n"
+            "💰 <b>Unit price:</b> <code>{unit_price}</code> SDG\n\n"
+            "{enter_quantity}"
+        ),
         "api_purchase_cancelled_no_charge": "Order cancelled. No balance was deducted ✅",
+        "player_id_required": "Player ID is required for this product ❗️",
+        "order_details_header": "Order Details:\n",
         "order_details": (
             "Order Details:\n"
             "Game: <b>{game_name}</b>\n"

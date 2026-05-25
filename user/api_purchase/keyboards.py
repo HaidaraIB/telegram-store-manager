@@ -228,6 +228,15 @@ def build_player_id_keyboard(lang: models.Language) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(back_buttons)
 
 
+def build_quantity_keyboard(lang: models.Language) -> InlineKeyboardMarkup:
+    """Build keyboard for voucher quantity input"""
+    back_buttons = [
+        build_back_button("back_to_api_denom", lang=lang),
+        build_back_to_home_page_button(lang=lang, is_admin=False)[0],
+    ]
+    return InlineKeyboardMarkup(back_buttons)
+
+
 def build_search_results_keyboard(
     games: list, lang: models.Language, page: int = 0
 ) -> InlineKeyboardMarkup:

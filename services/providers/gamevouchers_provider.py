@@ -29,6 +29,37 @@ def parse_category_from_code(game_code: str) -> Optional[int]:
     return None
 
 
+def gv_category_uses_quantity_flow(category_name: str) -> bool:
+    """
+    True for voucher-code categories (e.g. 'Free Fire Voucher's', 'PUBG UC Voucher's').
+    False for API top-up categories (e.g. 'FREE FIRE ( API )') and direct top-up games.
+    """
+    name = (category_name or "").lower()
+    if "( api )" in name or "(api)" in name:
+        return False
+    return "voucher" in name
+
+
+def gv_product_uses_quantity_flow(product: dict) -> bool:
+    """Voucher codes: product → quantity → confirm (no player ID)."""
+    if gv_product_requires_player_id(product):
+        return False
+    return gv_category_uses_quantity_flow(product.get("category_name", ""))
+
+
+def gv_product_requires_player_id(product: dict) -> bool:
+    """Direct top-up / autotopup: product → player ID → confirm."""
+    ptype = (product.get("type") or "").lower()
+    if ptype == "autotopup":
+        return True
+    if product.get("requires_game_uid"):
+        return True
+    if gv_category_uses_quantity_flow(product.get("category_name", "")):
+        return False
+    # API often sets type=voucher on diamond SKUs under non-voucher categories.
+    return True
+
+
 class GameVouchersProvider:
     provider = models.ApiProvider.GAMEVOUCHERS
     _log_name = "gamevouchers"
@@ -76,21 +107,21 @@ class GameVouchersProvider:
                 continue
             if not p.get("is_active", True):
                 continue
-            ptype = p.get("type", "voucher")
+            needs_uid = gv_product_requires_player_id(p)
+            uses_qty = gv_product_uses_quantity_flow(p)
+            enriched = {**p, "uses_quantity_flow": uses_qty}
             result.append(
                 DenominationItem(
                     id=str(p.get("id")),
                     name=p.get("name", ""),
                     price_usd=float(p.get("price", 0)),
-                    requires_player_id=p.get("requires_game_uid", False),
+                    requires_player_id=needs_uid,
                     product_type=(
-                        ProductType.TOPUP
-                        if ptype == "autotopup"
-                        else ProductType.VOUCHER
+                        ProductType.VOUCHER if uses_qty else ProductType.TOPUP
                     ),
                     delivery_mode=p.get("delivery_mode", "instant"),
                     stock=int(p.get("stock", 0)),
-                    raw=p,
+                    raw=enriched,
                 )
             )
         provider_logging.log_catalogue_prices(self._log_name, game_code, result)
@@ -127,8 +158,16 @@ class GameVouchersProvider:
         server_id: Optional[str] = None,
         remark: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        quantity: int = 1,
     ) -> CreateOrderResult:
         product_id = int(denomination.id)
+        quantity = max(1, min(10, int(quantity)))
+        if denomination.requires_player_id and not (player_id and str(player_id).strip()):
+            return CreateOrderResult(
+                external_id="",
+                message="Player ID is required for this product",
+                success=False,
+            )
         game_uid = player_id if denomination.requires_player_id else None
         raw = denomination.raw or {}
         api_currency = str(raw.get("currency", "USDT"))
@@ -140,16 +179,26 @@ class GameVouchersProvider:
             api_currency,
             product_id=str(product_id),
         )
+        total_usd = denomination.price_usd * quantity
+        provider_logging.log_price_conversion(
+            self._log_name,
+            "create_purchase_total",
+            denomination.name,
+            total_usd,
+            api_currency,
+            product_id=str(product_id),
+        )
         provider_logging.log_api_call(
             self._log_name,
             "create_purchase",
             product_id=product_id,
+            quantity=quantity,
             game_uid=game_uid,
         )
         try:
             data = await self._api.create_purchase(
                 product_id=product_id,
-                quantity=1,
+                quantity=quantity,
                 game_uid=game_uid,
                 client_reference=remark,
                 idempotency_key=idempotency_key,
