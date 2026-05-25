@@ -403,7 +403,12 @@ TEXTS = {
         "player_id_invalid": "معرف اللاعب غير صحيح ❌",
         "server_not_required": "هذه اللعبة لا تحتاج إلى سيرفر",
         "confirm_order": "تأكيد الطلب",
-        "order_processing": "جاري معالجة الطلب...",
+        "order_processing": "جاري تنفيذ الشراء...",
+        "api_order_placed": (
+            "✅ <b>تم الشراء بنجاح!</b>\n\n"
+            "⏳ جاري تنفيذ الطلب، ستصلك رسالة أخرى عند اكتمال الطلب.\n\n"
+            "رقم الطلب: <code>{order_id}</code>"
+        ),
         "order_created_success": "تم إنشاء الطلب بنجاح ✅\nرقم الطلب: {order_id}",
         "order_created_error": "حدث خطأ أثناء إنشاء الطلب ❌\n{error}",
         "insufficient_balance_api": (
@@ -422,7 +427,7 @@ TEXTS = {
         "api_order_status_completed": "مكتمل",
         "api_order_status_failed": "فشل",
         "api_order_status_cancelled": "ملغي",
-        "api_order_completed": "تم إكمال طلبك بنجاح!",
+        "api_order_completed": "✅ <b>اكتمل الطلب بنجاح!</b>",
         "api_order_failed": "فشل طلبك.",
         "api_order_cancelled": "تم إلغاء طلبك.",
         "balance_refunded": "تم إرجاع رصيدك: {amount} SDG",
@@ -916,7 +921,12 @@ TEXTS = {
         "player_id_invalid": "Invalid player ID ❌",
         "server_not_required": "This game does not require a server",
         "confirm_order": "Confirm Order",
-        "order_processing": "Processing order...",
+        "order_processing": "Processing your purchase...",
+        "api_order_placed": (
+            "✅ <b>Purchase successful!</b>\n\n"
+            "⏳ Your order is being processed. You will receive another message when it completes.\n\n"
+            "<b>Order ID:</b> <code>{order_id}</code>"
+        ),
         "order_created_success": "Order created successfully ✅\nOrder ID: {order_id}",
         "order_created_error": "Error creating order ❌\n{error}",
         "insufficient_balance_api": "Insufficient balance ❌\nYour balance: {balance}\nRequired price: {price}",
@@ -931,7 +941,7 @@ TEXTS = {
         "api_order_status_completed": "Completed",
         "api_order_status_failed": "Failed",
         "api_order_status_cancelled": "Cancelled",
-        "api_order_completed": "Your order has been completed successfully!",
+        "api_order_completed": "✅ <b>Order completed successfully!</b>",
         "api_order_failed": "Your order has failed.",
         "api_order_cancelled": "Your order has been cancelled.",
         "balance_refunded": "Your balance has been refunded: {amount} SDG",

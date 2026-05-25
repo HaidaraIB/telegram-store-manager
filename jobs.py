@@ -1,13 +1,24 @@
 from telegram.ext import ContextTypes
 from services.provider_factory import get_provider
 import models
-from sqlalchemy.orm import Session
 from common.lang_dicts import TEXTS, get_lang
 from common.common import escape_html, format_float
 import logging
 from Config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def schedule_immediate_order_poll(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Poll soon after purchase so the completion message arrives within seconds."""
+    if not context.application.job_queue:
+        return
+    for delay in (3, 8, 15):
+        context.application.job_queue.run_once(
+            poll_api_orders_status,
+            when=delay,
+            name=f"poll_api_orders_once_{delay}s",
+        )
 
 
 async def poll_api_orders_status(context: ContextTypes.DEFAULT_TYPE):
@@ -79,7 +90,10 @@ async def poll_api_orders_status(context: ContextTypes.DEFAULT_TYPE):
 
                             if status_changed and db_order.is_terminal():
                                 await notify_user_order_status(
-                                    context, db_order, old_status, new_status, s
+                                    context,
+                                    db_order.id,
+                                    old_status,
+                                    new_status,
                                 )
 
                 except Exception as e:
@@ -95,98 +109,140 @@ async def poll_api_orders_status(context: ContextTypes.DEFAULT_TYPE):
 
 async def notify_user_order_status(
     context: ContextTypes.DEFAULT_TYPE,
-    order: models.ApiPurchaseOrder,
+    order_id: int,
     old_status,
     new_status,
-    s: Session,
 ):
-    """Notify user about order status change"""
+    """Second message after purchase: completed, failed, or cancelled."""
     try:
-        lang = get_lang(order.user_id)
-        if new_status == models.ApiPurchaseOrderStatus.COMPLETED:
-            status_emoji = "✅"
-            status_text = TEXTS[lang].get(
-                "api_order_completed",
-                "Your order has been completed successfully!",
+        with models.session_scope() as s:
+            order = s.get(models.ApiPurchaseOrder, order_id)
+            if not order:
+                return
+            lang = get_lang(order.user_id)
+            user = s.get(models.User, order.user_id)
+
+            if new_status == models.ApiPurchaseOrderStatus.COMPLETED:
+                status_emoji = "✅"
+                status_text = TEXTS[lang].get(
+                    "api_order_completed",
+                    "✅ Order completed successfully!",
+                )
+            elif new_status == models.ApiPurchaseOrderStatus.FAILED:
+                status_emoji = "❌"
+                status_text = TEXTS[lang].get(
+                    "api_order_failed",
+                    "Your order has failed.",
+                )
+                refund_text = TEXTS[lang].get(
+                    "balance_refunded",
+                    "Your balance has been refunded: {amount} SDG",
+                ).format(amount=format_float(order.price_sudan))
+                status_text += f"\n\n💰 {refund_text}"
+            elif new_status == models.ApiPurchaseOrderStatus.CANCELLED:
+                status_emoji = "🚫"
+                status_text = TEXTS[lang].get(
+                    "api_order_cancelled",
+                    "Your order has been cancelled.",
+                )
+                refund_text = TEXTS[lang].get(
+                    "balance_refunded",
+                    "Your balance has been refunded: {amount} SDG",
+                ).format(amount=format_float(order.price_sudan))
+                status_text += f"\n\n💰 {refund_text}"
+            else:
+                return
+
+            message = f"{status_emoji} {status_text}\n\n"
+            message += (
+                f"<b>{TEXTS[lang].get('order_id', 'Order ID')}:</b> "
+                f"<code>{escape_html(str(order.api_order_id))}</code>\n"
             )
-        elif new_status == models.ApiPurchaseOrderStatus.FAILED:
-            status_emoji = "❌"
-            status_text = TEXTS[lang].get(
-                "api_order_failed",
-                "Your order has failed.",
+            game_name = "N/A"
+            api_game = order.api_game
+            if not api_game:
+                api_game = (
+                    s.query(models.ApiGame)
+                    .filter(
+                        models.ApiGame.api_game_code == order.api_game_code,
+                        models.ApiGame.provider == order.api_provider,
+                    )
+                    .first()
+                )
+            if api_game:
+                game_name = (
+                    api_game.arabic_name
+                    if (lang == models.Language.ARABIC and api_game.arabic_name)
+                    else api_game.api_game_name
+                )
+            message += (
+                f"<b>{TEXTS[lang].get('game', 'Game')}:</b> {escape_html(game_name)}\n"
             )
-            refund_text = TEXTS[lang].get(
-                "balance_refunded",
-                "Your balance has been refunded: {amount} SDG",
-            ).format(amount=format_float(order.price_sudan))
-            status_text += f"\n\n💰 {refund_text}"
-        elif new_status == models.ApiPurchaseOrderStatus.CANCELLED:
-            status_emoji = "🚫"
-            status_text = TEXTS[lang].get(
-                "api_order_cancelled",
-                "Your order has been cancelled.",
+            message += (
+                f"<b>{TEXTS[lang].get('denomination', 'Denomination')}:</b> "
+                f"{escape_html(order.denomination_name)}\n"
             )
-            refund_text = TEXTS[lang].get(
-                "balance_refunded",
-                "Your balance has been refunded: {amount} SDG",
-            ).format(amount=format_float(order.price_sudan))
-            status_text += f"\n\n💰 {refund_text}"
-        else:
-            return
+            if order.player_id:
+                message += (
+                    f"<b>{TEXTS[lang].get('player_id', 'Player ID')}:</b> "
+                    f"<code>{escape_html(order.player_id)}</code>\n"
+                )
+            if order.player_name:
+                message += (
+                    f"<b>{TEXTS[lang].get('player_name', 'Player Name')}:</b> "
+                    f"{escape_html(order.player_name)}\n"
+                )
 
-        message = f"{status_emoji} {status_text}\n\n"
-        message += f"<b>{TEXTS[lang].get('order_id', 'Order ID')}:</b> <code>{order.api_order_id}</code>\n"
-        game_name = "N/A"
-        api_game = order.api_game
-        if not api_game:
-            api_game = s.query(models.ApiGame).filter(
-                models.ApiGame.api_game_code == order.api_game_code,
-                models.ApiGame.provider == order.api_provider,
-            ).first()
-        if api_game:
-            game_name = (
-                api_game.arabic_name
-                if (lang == models.Language.ARABIC and api_game.arabic_name)
-                else api_game.api_game_name
+            codes = order.get_voucher_codes()
+            if codes:
+                message += (
+                    f"\n<b>{TEXTS[lang].get('voucher_codes', 'Voucher Codes')}:</b>\n"
+                )
+                for code in codes:
+                    message += f"<code>{escape_html(code)}</code>\n"
+
+            message += (
+                f"<b>{TEXTS[lang].get('price', 'Price')}:</b> "
+                f"<code>{format_float(order.price_sudan)} SDG</code>\n"
             )
-        message += f"<b>{TEXTS[lang].get('game', 'Game')}:</b> {escape_html(game_name)}\n"
-        message += f"<b>{TEXTS[lang].get('denomination', 'Denomination')}:</b> {escape_html(order.denomination_name)}\n"
-        if order.player_id:
-            message += f"<b>{TEXTS[lang].get('player_id', 'Player ID')}:</b> <code>{escape_html(order.player_id)}</code>\n"
+            if order.api_message:
+                message += (
+                    f"\n<b>{TEXTS[lang].get('message', 'Message')}:</b> "
+                    f"<i>{escape_html(order.api_message)}</i>"
+                )
 
-        if order.player_name:
-            message += f"<b>{TEXTS[lang].get('player_name', 'Player Name')}:</b> {escape_html(order.player_name)}\n"
+            user_id = order.user_id
+            api_order_id = order.api_order_id
 
-        codes = order.get_voucher_codes()
-        if codes:
-            message += f"\n<b>{TEXTS[lang].get('voucher_codes', 'Voucher Codes')}:</b>\n"
-            for code in codes:
-                message += f"<code>{escape_html(code)}</code>\n"
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=message,
+                parse_mode="HTML",
+            )
+            if user:
+                await context.bot.send_message(
+                    chat_id=Config.API_PURCHASES_ARCHIVE_CHANNEL,
+                    text=(
+                        message
+                        + "\n\n"
+                        + f"<i>{TEXTS[lang].get('order_user_info', 'Order user info')}:</i>\n\n"
+                        + user.stringify(lang)
+                    ),
+                    parse_mode="HTML",
+                )
 
-        message += f"<b>{TEXTS[lang].get('price', 'Price')}:</b> <code>{format_float(order.price_sudan)} SDG</code>\n"
-
-        await context.bot.send_message(
-            chat_id=order.user_id,
-            text=message,
-        )
-        user = s.get(models.User, order.user_id)
-        await context.bot.send_message(
-            chat_id=Config.API_PURCHASES_ARCHIVE_CHANNEL,
-            text=(
-                message
-                + "\n\n"
-                + f"<i>{TEXTS[lang].get('order_user_info', 'Order user info')}:</i>\n\n"
-                + user.stringify(lang)
-            ),
-        )
-
-        logger.info(
-            f"Notified user {order.user_id} about order {order.api_order_id} "
-            f"status change: {old_status.value} -> {new_status.value}"
-        )
+            logger.info(
+                "Notified user %s about order %s status: %s -> %s",
+                user_id,
+                api_order_id,
+                old_status.value,
+                new_status.value,
+            )
 
     except Exception as e:
         logger.error(
-            f"Error notifying user {order.user_id} about order {order.id}: {str(e)}",
+            "Error notifying about api order id=%s: %s",
+            order_id,
+            e,
             exc_info=True,
         )

@@ -794,6 +794,8 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
             game_name = context.user_data.get("api_game_name", game_code)
             selected_denom = context.user_data.get("api_selected_denom", {})
             player_id = context.user_data.get("api_player_id")
+            if player_id is not None:
+                player_id = str(player_id).strip() or None
             server_id = context.user_data.get("api_server_id")
             player_name = context.user_data.pop("api_player_name", None)
 
@@ -939,30 +941,23 @@ async def create_api_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     order_text = (
                         TEXTS[lang]
                         .get(
-                            "order_created_success",
-                            "Order created successfully ✅\nOrder ID: {order_id}",
+                            "api_order_placed",
+                            "✅ <b>Purchase successful!</b>\n\n"
+                            "⏳ Your order is being processed. "
+                            "You will receive another message when it completes.\n\n"
+                            "Order ID: <code>{order_id}</code>",
                         )
-                        .format(order_id=api_order_id)
+                        .format(order_id=escape_html(str(api_order_id)))
                     )
-                    if selected_denom.get("delivery_mode") == "async":
-                        order_text += "\n\n" + TEXTS[lang].get(
-                            "order_async_hint",
-                            "Your order is processing. You will be notified when it completes.",
-                        )
-                    order_lines = [
-                        f"Game: {escape_html(game_name)}",
-                        f"Denomination: {escape_html(denom_name)}",
-                        f"Price: {format_float(denom_price_sudan)}",
-                    ]
-                    if player_id:
-                        order_lines.append(f"Player ID: {escape_html(player_id)}")
-                    order_lines.append(f"Current Balance: {format_float(user.balance)}")
-                    order_details = TEXTS[lang].get(
-                        "order_details_header", "Order Details:\n"
-                    ) + "\n".join(order_lines)
-                    order_text += f"\n\n{order_details}"
 
-                await processing_msg.edit_text(text=order_text)
+                await processing_msg.edit_text(
+                    text=order_text,
+                    parse_mode="HTML",
+                )
+
+                from jobs import schedule_immediate_order_poll
+
+                schedule_immediate_order_poll(context)
             else:
                 error_msg = result.message or TEXTS[lang].get(
                     "api_error", "Error connecting to service"

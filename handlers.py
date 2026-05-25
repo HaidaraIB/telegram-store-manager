@@ -163,8 +163,8 @@ def setup_and_run():
 
     app.job_queue.run_repeating(
         poll_api_orders_status,
-        interval=30,  # Check every 30 seconds
-        first=10,  # Start after 10 seconds
+        interval=10,
+        first=5,
         name="poll_api_orders_status",
         job_kwargs={
             "id": "poll_api_orders_status",

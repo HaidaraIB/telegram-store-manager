@@ -168,7 +168,9 @@ class GameVouchersProvider:
                 message="Player ID is required for this product",
                 success=False,
             )
-        game_uid = player_id if denomination.requires_player_id else None
+        game_uid = (
+            str(player_id).strip() if denomination.requires_player_id and player_id else None
+        )
         raw = denomination.raw or {}
         api_currency = str(raw.get("currency", "USDT"))
         provider_logging.log_price_conversion(
