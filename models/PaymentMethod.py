@@ -28,7 +28,11 @@ class PaymentMethod(Base):
     created_at = sa.Column(sa.DateTime, default=datetime.now)
     updated_at = sa.Column(sa.DateTime, default=datetime.now, onupdate=datetime.now)
 
-    addresses = relationship("PaymentMethodAddress", back_populates="payment_method")
+    addresses = relationship(
+        "PaymentMethodAddress",
+        back_populates="payment_method",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self):
         return f"PaymentMethod(id={self.id}, name={self.name}, type={self.type.value}, is_active={self.is_active})"

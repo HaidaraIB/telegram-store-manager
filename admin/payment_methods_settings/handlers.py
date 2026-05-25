@@ -246,7 +246,6 @@ async def remove_payment_method(update: Update, context: ContextTypes.DEFAULT_TY
                 pm = s.get(models.PaymentMethod, int(update.callback_query.data))
                 if pm:
                     s.delete(pm)
-                    s.commit()
                     await update.callback_query.answer(
                         text=TEXTS[lang]["payment_method_removed_success"],
                         show_alert=True,
@@ -277,10 +276,13 @@ async def remove_payment_method(update: Update, context: ContextTypes.DEFAULT_TY
                 ]
                 for pm in payment_methods
             ]
-        pm_keyboard.append(
-            build_back_button("back_to_payment_methods_settings", lang=lang)
-        )
-        pm_keyboard.append(build_back_to_home_page_button(lang=lang, is_admin=True)[0])
+            pm_keyboard.append(
+                build_back_button("back_to_payment_methods_settings", lang=lang)
+            )
+            pm_keyboard.append(
+                build_back_to_home_page_button(lang=lang, is_admin=True)[0]
+            )
+
         await update.callback_query.edit_message_text(
             text=TEXTS[lang]["remove_payment_method_instruction"],
             reply_markup=InlineKeyboardMarkup(pm_keyboard),
@@ -359,11 +361,17 @@ async def show_pm_edit_options(update: Update, context: ContextTypes.DEFAULT_TYP
         models.Permission.MANAGE_PAYMENT_METHODS
     ).filter(update):
         lang = get_lang(update.effective_user.id)
-        if not update.callback_query.data.startswith("back"):
-            pm_id = int(update.callback_query.data)
+        data = update.callback_query.data
+        if data.startswith("back"):
+            pm_id = context.user_data["editing_pm_id"]
+        elif data.isnumeric():
+            pm_id = int(data)
             context.user_data["editing_pm_id"] = pm_id
         else:
-            pm_id = context.user_data["editing_pm_id"]
+            pm_id = context.user_data.get("editing_pm_id")
+
+        if not pm_id:
+            return ConversationHandler.END
 
         keyboard = build_edit_payment_method_keyboard(lang)
         keyboard.append(build_back_button("back_to_choose_pm_to_edit", lang=lang))
@@ -402,7 +410,6 @@ async def handle_edit_pm_action(update: Update, context: ContextTypes.DEFAULT_TY
                 pm = s.get(models.PaymentMethod, pm_id)
                 if pm:
                     pm.is_active = not pm.is_active
-                    s.commit()
                     await update.callback_query.answer(
                         text=TEXTS[lang]["payment_method_status_updated"],
                         show_alert=True,
@@ -1060,7 +1067,6 @@ async def remove_payment_address(update: Update, context: ContextTypes.DEFAULT_T
                 if address:
                     pm_id = address.payment_method_id
                     s.delete(address)
-                    s.commit()
                     await update.callback_query.answer(
                         text=TEXTS[lang]["payment_address_removed_success"],
                         show_alert=True,
